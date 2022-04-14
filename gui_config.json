@@ -1,0 +1,40 @@
+{
+    "window_name": "Template",
+    "window_size": [600, 300],
+    "window_icon": "",
+    "layout": "QGridLayout",
+    "widgets": {
+        "example_button": {
+            "wgt_name": "QPushButton",
+            "args": ["Button"],
+            "pos": [0, 2],
+            "dim": [],
+            "connect_function": "example_button_press"
+        },
+        "run_wkr_btn": {
+            "wgt_name": "QPushButton",
+            "args": ["Run worker"],
+            "pos": [0, 3],
+            "dim": [],
+            "connect_function": "do_this"
+        },
+        "example_textbox": {
+            "wgt_name": "QLineEdit",
+            "args": ["Text here:"],
+            "pos": [0, 0],
+            "dim": []
+        },
+        "example_label": {
+            "wgt_name": "QLabel",
+            "args": ["Hello World!"],
+            "pos": [1, 0],
+            "dim": []
+        },
+        "example_textlog": {
+            "wgt_name": "QTextBrowser",
+            "args": [],
+            "pos": [2, 0],
+            "dim": [2, 2]
+        }
+    }
+}
