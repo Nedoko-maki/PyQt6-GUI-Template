@@ -1,80 +1,159 @@
 import json
-import traceback
+import logging
+import queue
+import threading
 from pathlib import Path
 
-import PyQt5.QtCore as QtCore
-import PyQt5.QtWidgets as Widgets
+import PyQt6.QtGui as QtGui
+import PyQt6.QtWidgets as Widgets
+
+logging.basicConfig(
+    format='%(asctime)s.%(msecs)03d %(levelname)s:\t%(message)s',
+    level=logging.INFO,
+    datefmt='%H:%M:%S')
+
+
+class ThreadManager:
+    def __init__(self):
+        """
+        Basic thread managing class, adds new threads to a dictionary and does not return any values unless a Queue
+        object is used.
+        """
+
+        self.threads = {}
+
+    @staticmethod
+    def _wrapper(function, args, kwargs, ret_queue):
+        retval = function(*args, **kwargs)
+
+        if retval is not None:
+            ret_queue.put(retval)
+
+    def add_thread(self,
+                   thread_name: str | None,
+                   function,
+                   args: tuple = (),
+                   kwargs: dict = None) -> None:
+
+        if kwargs is None:
+            kwargs = {}
+            #  handling the case when kwargs is None (**kwargs).
+
+        ret_queue = queue.Queue()
+        thread = threading.Thread(target=self._wrapper, args=(function, args, kwargs, ret_queue), name=thread_name,
+                                  daemon=True)
+
+        self.threads[thread_name] = {"thread": thread, "queue": ret_queue}
+
+    def start_thread(self, thread_name):
+        try:
+            self.threads[thread_name]["thread"].start()
+        except KeyError as err:
+            logging.error(f"{err}: there is no thread named '{thread_name}'.")
+        except RuntimeError as err:
+            logging.error(f"{err}.")
+
+    def wait_thread(self, thread_name: str | None, blocking=True):
+        return self.threads[thread_name]["queue"].get(block=blocking)
+
+
+class _Widget:
+    def __init__(self, attributes: dict):
+        self.widget = getattr(Widgets, attributes["wgt_name"])
+        self.args = attributes["args"]
+        self.pos = attributes["pos"] + attributes["dim"]
+        if "connect_function" in attributes:
+            self.connecting_function = attributes["connect_function"]
+
+    def __getitem__(self, item):
+        return self.__dict__[item]
+
+    def init_widget(self):
+        self.widget = self.widget(*self.args)
+
+
+class _WidgetsContainer:
+    def __init__(self, widgets_dict: dict):
+        for widget_name, widget_attrs in widgets_dict.items():
+            setattr(self, widget_name, _Widget(widget_attrs))
+
+    def __getitem__(self, item):
+        return self.__dict__[item]
+
+    def __setitem__(self, key, value):
+        self.__dict__[key] = value
+
+    def __iter__(self):
+        return self.__dict__.__iter__()
+
+    def init_widgets(self):
+        for widget_name in self.__dict__:  # tested briefly, only user made attrs are returned (?) (can't be sure...).
+            getattr(self, widget_name).init_widget()
 
 
 class MainWindowBase(Widgets.QMainWindow):
-    def __init__(self):
+    def __init__(self, config_filepath: Path | str = None):
         super().__init__()
 
-        try:
-            with open("gui_config.json") as json_file:
-                self.config = json.load(json_file)
-        except FileNotFoundError:
-            print("gui_config.json file missing!")
-            exit()
-        except PermissionError:
-            print("Could not open gui_config.json!")
-            exit()
-
-        self.layout = getattr(Widgets, self.config["layout"])()  # calling a function from a module by string name.
+        self._config = self._load_config(config_filepath)
+        self._layout = getattr(Widgets, self._config["layout"])()  # calling a function from a module by string name.
         # bad practice I think.
-        self.window = Widgets.QWidget()
-        self.log = str()
+        self._window = Widgets.QWidget()
+        self._log = str()
 
-        self.widgets = self.config["widgets"]
+        self.widgets = _WidgetsContainer(self._config["widgets"])
+        self.widgets.init_widgets()
 
-        for widget_name in self.widgets:  # takes widgets from config and calls them and keeps them in a dict.
-            self.widgets[widget_name]["wgt"] = \
-                getattr(Widgets, self.widgets[widget_name]["wgt_name"])(*parse_args(self.widgets[widget_name]["args"]))
-            self.widgets[widget_name]["pos"] += self.widgets[widget_name]["dim"]
-
-        # {k: {"wgt": getattr(Widgets, v["w_name"])(*parse_args(v["args"])),
-        #      "pos": v["pos"] + v["dim"]} for (k, v) in self.config["widgets"].items()
-        #  }
-        # self.widget_pos = {k: v["pos"] + v["dim"] for (k, v) in self.config["widgets"].items()}
-
-        self.thread, self.worker = None, None
         self.settings, self.filepath = None, None
-        self.worker_running = False
+        self._init_ui()
 
-    def init_ui(self):
-        # Connect signal to our methods.
-
-        # self.widgets["button_confirm"].clicked.connect(self.button_confirm_pressed)
-        # self.widgets["button_browse"].clicked.connect(self.button_browse_pressed)
+    def _init_ui(self):
 
         for w_name in self.widgets:
-            if self.widgets[w_name]["wgt_name"] in ["QPushButton"]:
-                self.widgets[w_name]["wgt"].clicked.connect(
-                    getattr(self, self.widgets[w_name]["connect_function"]))
+            if isinstance(self.widgets[w_name].widget, (Widgets.QPushButton,)):
+                self.widgets[w_name]["widget"].clicked.connect(
+                    getattr(self, self.widgets[w_name]["connecting_function"]))
 
-        self.window.setWindowTitle(self.config["window_name"])
+        self._window.setWindowTitle(self._config["window_name"])
 
-        if self.config["window_icon"]:  # if window icon is written in config, set icon.
-            self.window.setWindowIcon(self.config["window_icon"])
+        if self._config["window_icon"]:  # if window icon is written in config, set icon.
+            self._window.setWindowIcon(self._config["window_icon"])
 
-        qtRectangle = Widgets.QWidget.frameGeometry(self)  # this code is to attempt to centre the window.
-        centerPoint = Widgets.QDesktopWidget().availableGeometry().center()
-        qtRectangle.moveCenter(centerPoint)
-        window_position = (qtRectangle.topLeft().x(), qtRectangle.topLeft().y())  # up to here.
-        self.window.setGeometry(*window_position, *self.config["window_size"])
+        self._centre_window()
 
-        self.widgets["example_textlog"]["wgt"].setLineWrapMode(Widgets.QTextEdit.NoWrap)
+        self.widgets["example_textlog"].widget.setLineWrapMode(Widgets.QTextEdit.LineWrapMode(0))
 
         for w_name in self.widgets:
             if self.widgets[w_name]["pos"]:  # if pos is not empty, add the widget.
-                self.layout.addWidget(self.widgets[w_name]["wgt"], *self.widgets[w_name]["pos"])
+                self._layout.addWidget(self.widgets[w_name]["widget"], *self.widgets[w_name]["pos"])
 
-        self.window.setLayout(self.layout)
-        self.window.show()
+        self._window.setLayout(self._layout)
+        self._window.show()
+
+    def _centre_window(self):
+        qtRectangle = Widgets.QWidget.frameGeometry(self)  # this code is to attempt to centre the window.
+        centerPoint = QtGui.QGuiApplication.primaryScreen().availableGeometry().center()
+        qtRectangle.moveCenter(centerPoint)
+        window_position = (qtRectangle.topLeft().x(), qtRectangle.topLeft().y())  # up to here.
+        self._window.setGeometry(*window_position, *self._config["window_size"])
+
+    @staticmethod
+    def _load_config(config_fp: Path):
+        try:
+            with open(config_fp) as json_file:
+                config = json.load(json_file)
+        except TypeError as e:
+            logging.info(f"Wrong input type! {e}")
+        except FileNotFoundError:
+            logging.info(f"Could not find {config_fp.absolute()}!")
+        except PermissionError:
+            logging.info(f"Could not open {config_fp.absolute()}!")
+
+        return config
 
     def print_log(self, text):
-        self.log += str(text) + "\n"
-        self.widgets["example_textlog"]["wgt"].setText(self.log)
+        self._log += str(text) + "\n"
+        self.widgets["example_textlog"].widget.setText(self._log)
 
     def progress_update(self, percentage: int):
         self.widgets["progress_bar"].setValue(percentage)
@@ -82,62 +161,6 @@ class MainWindowBase(Widgets.QMainWindow):
     def file_dialog(self):
         self.filepath = Widgets.QFileDialog.getOpenFileName(self, 'Open file',
                                                             str(Path(Path.cwd())), "All files (.*)")
-        # self.widgets["textbox_file"].setText(self.filepath[0])
-
-    def run_worker(self, func):
-        if not self.worker_running:
-            self.log = str()  # clearing log
-            self.widgets["example_textlog"]["wgt"].setText(self.log)
-
-            try:
-                self.settings = ()  # pass any arguments into the worker function here.
-                self._run_worker(func)
-
-            except ValueError:
-                self.print_log("Invalid input!\n")
-                self.print_log(traceback.format_exc())
-
-        else:
-            self.print_log("Still running child process!")
-
-    def _run_worker(self, worker_function):
-        self.thread = QtCore.QThread()
-        self.worker = Worker(worker_function, self.settings)
-
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.worker.finished.connect(self.worker_status)
-        self.worker.progress_update.connect(self.progress_update)
-        self.worker.log_update.connect(self.print_log)
-        self.thread.start()
-
-        self.worker_status()
-
-    def worker_status(self):
-        self.worker_running = False if self.worker_running else True
-
-
-class Worker(QtCore.QObject):
-    finished = QtCore.pyqtSignal()  # signalling code for signalling to mother process of GUI.
-    progress_update = QtCore.pyqtSignal(int)
-    log_update = QtCore.pyqtSignal(str)
-
-    def __init__(self, worker_function, settings):
-        super().__init__()
-        self.worker_function = worker_function
-        self.settings = settings
-
-    def run(self):
-        pyqt_signal_dict = {"progress_bar": self.progress_update,
-                            "text_log": self.log_update}
-
-        self.worker_function(self.settings)
-
-        self.log_update.emit("Finished!")
-        self.finished.emit()
 
 
 def parse_args(args):  # I haven't seen these work, so these are untested and maybe depreciated.

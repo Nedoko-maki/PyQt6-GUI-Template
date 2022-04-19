@@ -4,19 +4,19 @@
     "window_icon": "",
     "layout": "QGridLayout",
     "widgets": {
-        "example_button": {
+        "example_btn": {
             "wgt_name": "QPushButton",
-            "args": ["Button"],
-            "pos": [0, 2],
-            "dim": [],
-            "connect_function": "example_button_press"
-        },
-        "run_wkr_btn": {
-            "wgt_name": "QPushButton",
-            "args": ["Run worker"],
+            "args": ["Example button"],
             "pos": [0, 3],
             "dim": [],
             "connect_function": "do_this"
+        },
+        "example_btn_2": {
+            "wgt_name": "QPushButton",
+            "args": ["Answers!"],
+            "pos": [1, 3],
+            "dim": [],
+            "connect_function": "print_ans"
         },
         "example_textbox": {
             "wgt_name": "QLineEdit",
