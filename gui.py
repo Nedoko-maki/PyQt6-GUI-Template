@@ -13,11 +13,49 @@ logging.basicConfig(
     datefmt='%H:%M:%S')
 
 
+class _Widget:
+    def __init__(self, attributes: dict):
+        self.widget = getattr(Widgets, attributes["wgt_name"])
+        self.args = attributes["args"]
+        self.pos = attributes["pos"] + attributes["dim"]
+        if "connect_function" in attributes:
+            self.connecting_function = attributes["connect_function"]
+
+    def __getitem__(self, item):
+        return self.__dict__[item]
+
+    def init_widget(self):
+        self.widget = self.widget(*self.args)
+
+
+class _WidgetsContainer:
+    def __init__(self, widgets_dict: dict):
+        for widget_name, widget_attrs in widgets_dict.items():
+            setattr(self, widget_name, _Widget(widget_attrs))
+
+    def __getitem__(self, item: str):
+
+        if item not in self.__dict__:
+            raise KeyError("Item not in WidgetContainer.")
+
+        return self.__dict__[item]
+
+    def __setitem__(self, key: str, value):
+        self.__dict__[key] = value
+
+    def __iter__(self):
+        return self.__dict__.__iter__()
+
+    def init_widgets(self):
+        for widget_name in self.__dict__:  # tested briefly, only user made attrs are returned (?) (can't be sure...).
+            getattr(self, widget_name).init_widget()
+
+
 class ThreadManager:
     def __init__(self):
         """
-        Basic thread managing class, adds new threads to a dictionary and does not return any values unless a Queue
-        object is used.
+        Basic thread managing class, adds new threads to a dictionary and only returns values if the return value is
+        not None using the thread_wait() method.
         """
 
         self.threads = {}
@@ -54,48 +92,19 @@ class ThreadManager:
             logging.error(f"{err}.")
 
     def wait_thread(self, thread_name: str | None, blocking=True):
-        return self.threads[thread_name]["queue"].get(block=blocking)
+        if thread_name not in self.threads:
+            raise KeyError(f"Thread '{thread_name}' not in ThreadManager!")
 
-
-class _Widget:
-    def __init__(self, attributes: dict):
-        self.widget = getattr(Widgets, attributes["wgt_name"])
-        self.args = attributes["args"]
-        self.pos = attributes["pos"] + attributes["dim"]
-        if "connect_function" in attributes:
-            self.connecting_function = attributes["connect_function"]
-
-    def __getitem__(self, item):
-        return self.__dict__[item]
-
-    def init_widget(self):
-        self.widget = self.widget(*self.args)
-
-
-class _WidgetsContainer:
-    def __init__(self, widgets_dict: dict):
-        for widget_name, widget_attrs in widgets_dict.items():
-            setattr(self, widget_name, _Widget(widget_attrs))
-
-    def __getitem__(self, item):
-        return self.__dict__[item]
-
-    def __setitem__(self, key, value):
-        self.__dict__[key] = value
-
-    def __iter__(self):
-        return self.__dict__.__iter__()
-
-    def init_widgets(self):
-        for widget_name in self.__dict__:  # tested briefly, only user made attrs are returned (?) (can't be sure...).
-            getattr(self, widget_name).init_widget()
+        retval = self.threads[thread_name]["queue"].get(block=blocking)
+        del self.threads[thread_name]
+        return retval
 
 
 class MainWindowBase(Widgets.QMainWindow):
-    def __init__(self, config_filepath: Path | str = None):
+    def __init__(self, config_path: Path | str = None):
         super().__init__()
 
-        self._config = self._load_config(config_filepath)
+        self._config = self._load_config(config_path)
         self._layout = getattr(Widgets, self._config["layout"])()  # calling a function from a module by string name.
         # bad practice I think.
         self._window = Widgets.QWidget()
@@ -105,30 +114,33 @@ class MainWindowBase(Widgets.QMainWindow):
         self.widgets.init_widgets()
 
         self.settings, self.filepath = None, None
-        self._init_ui()
 
-    def _init_ui(self):
+    @staticmethod
+    def _load_config(config_fp: Path):
+        try:
+            with open(config_fp) as json_file:
+                config = json.load(json_file)
+        except TypeError as e:
+            logging.error(f"Wrong input type! {e}")
+        except FileNotFoundError:
+            logging.error(f"Could not find {config_fp.absolute()}!")
+        except PermissionError:
+            logging.error(f"Could not open {config_fp.absolute()}!")
 
-        for w_name in self.widgets:
+        return config
+
+    def _connect_button_widgets(self):
+        for w_name in self.widgets:  # connecting buttons to respective functions.
             if isinstance(self.widgets[w_name].widget, (Widgets.QPushButton,)):
-                self.widgets[w_name]["widget"].clicked.connect(
+
+                if self.widgets[w_name]["connecting_function"] not in dir(self):  # I would've used self.__dict__, but
+                    #  it was behaving oddly and not returning the child class' attributes.
+                    raise NotImplementedError(
+                        f"Connect function '{self.widgets[w_name]['connecting_function']}' "
+                        f"for the button '{w_name}' does not exist.")
+
+                self.widgets[w_name].widget.clicked.connect(
                     getattr(self, self.widgets[w_name]["connecting_function"]))
-
-        self._window.setWindowTitle(self._config["window_name"])
-
-        if self._config["window_icon"]:  # if window icon is written in config, set icon.
-            self._window.setWindowIcon(self._config["window_icon"])
-
-        self._centre_window()
-
-        self.widgets["example_textlog"].widget.setLineWrapMode(Widgets.QTextEdit.LineWrapMode(0))
-
-        for w_name in self.widgets:
-            if self.widgets[w_name]["pos"]:  # if pos is not empty, add the widget.
-                self._layout.addWidget(self.widgets[w_name]["widget"], *self.widgets[w_name]["pos"])
-
-        self._window.setLayout(self._layout)
-        self._window.show()
 
     def _centre_window(self):
         qtRectangle = Widgets.QWidget.frameGeometry(self)  # this code is to attempt to centre the window.
@@ -137,23 +149,33 @@ class MainWindowBase(Widgets.QMainWindow):
         window_position = (qtRectangle.topLeft().x(), qtRectangle.topLeft().y())  # up to here.
         self._window.setGeometry(*window_position, *self._config["window_size"])
 
-    @staticmethod
-    def _load_config(config_fp: Path):
-        try:
-            with open(config_fp) as json_file:
-                config = json.load(json_file)
-        except TypeError as e:
-            logging.info(f"Wrong input type! {e}")
-        except FileNotFoundError:
-            logging.info(f"Could not find {config_fp.absolute()}!")
-        except PermissionError:
-            logging.info(f"Could not open {config_fp.absolute()}!")
+    def _add_widgets(self):
+        for w_name in self.widgets:
+            if self.widgets[w_name]["pos"]:  # if pos is not empty, add the widget.
+                self._layout.addWidget(self.widgets[w_name]["widget"], *self.widgets[w_name]["pos"])
 
-        return config
+    def init_ui(self):
 
-    def print_log(self, text):
+        self._connect_button_widgets()
+        self._window.setWindowTitle(self._config["window_name"])
+
+        if self._config["window_icon"]:  # if window icon is written in config, set icon.
+            self._window.setWindowIcon(self._config["window_icon"])
+
+        self._centre_window()
+
+        self.widgets["log"].widget.setLineWrapMode(Widgets.QTextEdit.LineWrapMode(0))
+
+        self._add_widgets()
+
+        self._window.setLayout(self._layout)
+
+    def show(self):
+        self._window.show()
+
+    def log_print(self, text):
         self._log += str(text) + "\n"
-        self.widgets["example_textlog"].widget.setText(self._log)
+        self.widgets["log"].widget.setText(self._log)
 
     def progress_update(self, percentage: int):
         self.widgets["progress_bar"].setValue(percentage)
@@ -161,15 +183,3 @@ class MainWindowBase(Widgets.QMainWindow):
     def file_dialog(self):
         self.filepath = Widgets.QFileDialog.getOpenFileName(self, 'Open file',
                                                             str(Path(Path.cwd())), "All files (.*)")
-
-
-def parse_args(args):  # I haven't seen these work, so these are untested and maybe depreciated.
-    out = list()
-    for arg in args:
-        if arg.startswith("var:"):
-            out.append(locals()[arg[len("var:"):]])
-        elif arg.startswith("w_func:"):
-            out.append(getattr(Widgets, arg[len("w_func:"):])())
-        else:
-            out.append(arg)
-    return out
